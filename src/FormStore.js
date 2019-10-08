@@ -396,10 +396,19 @@ class FormStore {
       store.data = data || Object.assign({}, store.dataServer);
 
       // setup error observable
-      const temp = {};
-      Object.keys(store.data).forEach((key) => {
-        temp[key] = null;
-      });
+			let temporaryDataErrors = {};
+			const setErrorFields = (data, temp) => {
+				Object.keys(data).forEach((key) => {
+					if (data[key] && typeof data[key] === 'object') {
+						temp[key] = {};
+						return setErrorFields(data[key], temp[key]);
+					} else {
+						temp[key] = null;
+					}
+				});
+			  };
+		  
+      setErrorFields(store.data, temporaryDataErrors);
       store.dataErrors = temp;
     })();
   }
