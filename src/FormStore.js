@@ -2,6 +2,19 @@ import { observable, observe, autorunAsync, action, computed, asMap } from 'mobx
 
 const DEFAULT_SERVER_ERROR_MESSAGE = 'Lost connection to server';
 
+const getFieldErrors = (tempData) => {
+  const errorsArray = [];
+  Object.keys(tempData).forEach((key) => {
+    if (tempData[key] && typeof tempData[key] === 'object') {
+      return getFieldErrors(tempData[key]);
+    } else if (tempData[key]) {
+      errorsArray.push(tempData[key]);
+    }
+    return tempData[key];
+  });
+  return errorsArray;
+};
+
 function isSame(val1, val2) {
   /* eslint-disable eqeqeq */
   return val1 == val2 || (val1 instanceof Date && val2 instanceof Date && val1.valueOf() == val2.valueOf());
@@ -41,6 +54,7 @@ function observableChanged(change) {
  * @returns response.status
  */
 async function processSaveResponse(store, updates, response) {
+  // TODO add correct updates deleting after errors. updates[field] inner objects
   store.options.log(`[${store.options.name}] Response received from server.`);
 
   if (response.status === 'error') {
@@ -294,18 +308,7 @@ class FormStore {
       errors = [store.serverError];
     }
 
-    const getFieldErrors = (tempData) => {
-      return Object.keys(tempData).find((key) => {
-        if (tempData[key] && typeof tempData[key] === 'object') {
-          return getFieldErrors(tempData[key]);
-        } 
-        if (tempData[key]) {
-          errors.push(tempData[key]);
-        }
-        return tempData[key];
-      });
-    };
-    getFieldErrors(store.dataErrors);
+    errors = errors.concat(getFieldErrors(store.dataErrors));
 
     const status = {
       errors,
