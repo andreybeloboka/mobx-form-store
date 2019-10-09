@@ -294,11 +294,18 @@ class FormStore {
       errors = [store.serverError];
     }
 
-    Object.keys(store.dataErrors).forEach((key) => {
-      if (store.dataErrors[key]) {
-        errors.push(store.dataErrors[key]);
-      }
-    });
+    const getFieldErrors = (tempData) => {
+      return Object.keys(tempData).find((key) => {
+        if (tempData[key] && typeof tempData[key] === 'object') {
+          return getFieldErrors(tempData[key]);
+        } 
+        if (tempData[key]) {
+          errors.push(tempData[key]);
+        }
+        return tempData[key];
+      });
+    };
+    getFieldErrors(store.dataErrors);
 
     const status = {
       errors,
@@ -327,11 +334,19 @@ class FormStore {
       store.data = data || Object.assign({}, store.dataServer);
 
       // setup error observable
-      const temp = {};
-      Object.keys(store.data).forEach((key) => {
-        temp[key] = null;
-      });
-      store.dataErrors = temp;
+      const temporaryDataErrors = {};
+      const setErrorFields = (currentDataFields, temp) => {
+        Object.keys(currentDataFields).forEach((key) => {
+          if (currentDataFields[key] && typeof currentDataFields[key] === 'object') {
+            temp[key] = {};
+            return setErrorFields(currentDataFields[key], temp[key]);
+          }
+          temp[key] = null;
+          return temp[key];
+        });
+      };
+      setErrorFields(store.data, temporaryDataErrors);
+      store.dataErrors = temporaryDataErrors;
     })();
   }
 
