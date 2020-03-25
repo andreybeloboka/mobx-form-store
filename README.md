@@ -23,10 +23,11 @@ Instances of FormStore \(models\) store the data entered by the user into form f
 * Server [responses](https://alexhisen.gitbooks.io/mobx-forms/formstore-server-errors.html) to save requests can drive error / validation messaging and discard invalid values.
 * Can differentiate between 'create' and 'update' save operations. A model that has not yet been created on the server will not try to refresh from server.
 * Saves are queued automatically, never concurrent.
+* \(NEW in v1.3\) Auto-save can be dynamically configured and enabled or disabled
 
 ## Requirements
 
-FormStore only requires [MobX](https://mobx.js.org/) 2.2+ or 3.x. It is published in NPM as an ES5 universal module, including a minified version. **FormStore does not implement the actual server requests, it only calls methods that you provide with the data to be sent to the server.**
+FormStore only requires [MobX](https://mobx.js.org/) 2.2+, 3.x, 4.x or 5.x. _MobX strict mode is currently not supported._ It is published in NPM as an ES5 universal module, including a minified version. **FormStore does not implement the actual server requests, it only calls methods that you provide with the data to be sent to the server.**
 
 ## Installation
 

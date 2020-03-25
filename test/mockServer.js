@@ -6,12 +6,14 @@ const record = {
   id: null,
   firstName: null,
   lastName: null,
+  name: null,
   email: null,
   phone: null,
+  birthdate: null,
 };
 
 function getRecord() {
-  return JSON.parse(localStorage.getItem('mockServerUser')) || record;
+  return JSON.parse(localStorage.getItem('mockServerUser')) || Object.assign({}, record);
 }
 
 function setRecord(data) {
@@ -22,7 +24,7 @@ class MockServer {
   async get() {
     const data = getRecord();
     Object.keys(data).filter((key) => key.match(/date/i)).forEach((key) => {
-      data[key] = new Date(data[key]);
+      data[key] = data[key] && new Date(data[key]);
     });
     return data;
   }

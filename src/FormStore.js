@@ -1,4 +1,4 @@
-import { observable, observe, autorunAsync, action, computed, asMap } from 'mobx';
+import { observable, observe, autorun, autorunAsync, action, computed, asMap, isComputedProp } from 'mobx';
 
 const DEFAULT_SERVER_ERROR_MESSAGE = 'Lost connection to server';
 
@@ -39,6 +39,27 @@ function observableChanged(change) {
     }
   })();
 }
+
+/**
+ * Sets up observation on all computed data properties, if any
+ * @param {FormStore} store
+ */
+function observeComputedProperties(store) {
+  store.observeComputedPropertiesDisposers.forEach((f) => f());
+  store.observeComputedPropertiesDisposers = [];
+  action(() => {
+    Object.getOwnPropertyNames(store.data).forEach((key) => {
+      if (isComputedProp(store.data, key)) {
+        store.options.log(`[${store.options.name}] Observing computed property: ${key}`);
+        const disposer = observe(store.data, key, ({ newValue }) => store.storeDataChanged({ name: key, newValue }));
+        store.observeComputedPropertiesDisposers.push(disposer);
+        // add or delete from dataChanges depending on whether value is same as in dataServer:
+        store.storeDataChanged({ name: key, newValue: store.data[key] });
+      }
+    });
+  })();
+}
+
 /**
  * Records successfully saved data as saved
  * and reverts fields server indicates to be in error
@@ -90,11 +111,11 @@ async function processSaveResponse(store, updates, response) {
       Object.assign(store.data, response.data);
     }
 
-    store.dataChanges.forEach((value, key) => {
+    for (const [key, value] of Array.from(store.dataChanges)) {
       if (store.isSame(value, store.dataServer[key])) {
         store.dataChanges.delete(key);
       }
-    });
+    }
   })();
 
   if (typeof store.options.afterSave === 'function') {
@@ -123,6 +144,7 @@ class FormStore {
   options = {
     name: 'FormStore', // used in log statements
     idProperty: null,
+    autoSaveOptions: { skipPropertyBeingEdited: true, keepServerError: true },
     autoSaveInterval: 0, // in ms
     minRefreshInterval: 0, // in ms
     log: function noop() {},
@@ -159,7 +181,16 @@ class FormStore {
   /** @private */
   saveQueue = Promise.resolve();
   /** @private */
-  observeDisposer;
+  observeDataObjectDisposer;
+  /** @private */
+  observeDataPropertiesDisposer;
+  /**
+   * @private
+   * @type {Array<Function>}
+   */
+  observeComputedPropertiesDisposers = [];
+  /** @private */
+  autorunDisposer;
 
   /** @private */
   @observable isReady = false; // true after initial data load (refresh) has completed
@@ -171,7 +202,7 @@ class FormStore {
   @observable serverError = null; // stores both communication error and any explicit response.error returned to save
 
   /** @private */
-  // To support both Mobx 2.2+ and 3.x, this is now done in constructor:
+  // To support both Mobx 2.2+ and 3+, this is now done in constructor:
   // @observable dataChanges = asMap(); // changes that will be sent to server
 
   /** @private */
@@ -199,15 +230,15 @@ class FormStore {
     }
     store.options.server.errorMessage = store.options.server.errorMessage || DEFAULT_SERVER_ERROR_MESSAGE;
 
-    // Supports both Mobx 3.x (observable.map) and 2.x+ (asMap) without deprecation warnings:
-    this.dataChanges = observable.map ? observable.map() : asMap(); // changes that will be sent to server
+    // Supports both Mobx 3+ (observable.map) and 2.x (asMap) without deprecation warnings:
+    store.dataChanges = observable.map ? observable.map() : asMap(); // changes that will be sent to server
 
     // register observe for changes to properties in store.data as well as to complete replacement of store.data object
-    const storeDataChanged = observableChanged.bind(store);
-    store.observeDisposer = observe(store.data, storeDataChanged);
-    observe(store, 'data', () => {
-      store.observeDisposer && store.observeDisposer();
-      store.observeDisposer = observe(store.data, storeDataChanged);
+    store.storeDataChanged = observableChanged.bind(store);
+    store.observeDataPropertiesDisposer = observe(store.data, store.storeDataChanged);
+    store.observeDataObjectDisposer = observe(store, 'data', () => {
+      store.observeDataPropertiesDisposer && store.observeDataPropertiesDisposer();
+      store.observeDataPropertiesDisposer = observe(store.data, store.storeDataChanged);
 
       store.dataChanges.clear();
       action(() => {
@@ -217,24 +248,61 @@ class FormStore {
             store.dataChanges.set(key, value);
           }
         });
+        observeComputedProperties(store);
       })();
     });
 
-    // auto-save by observing dataChanges keys
-    if (store.options.autoSaveInterval) {
-      autorunAsync(() => {
-        if ((!store.options.idProperty || this.data[store.options.idProperty]) && this.dataChanges.keys().length) {
-          store.options.log(`[${store.options.name}] Auto-save started...`);
-
-          store.save({ skipPropertyBeingEdited: true, keepServerError: true });
-        }
-      }, store.options.autoSaveInterval);
-    }
+    store.configAutoSave(store.options.autoSaveInterval, store.options.autoSaveOptions);
 
     if (data) {
       store.dataServer = data;
       store.reset();
+      observeComputedProperties(store);
       store.isReady = true;
+    }
+  }
+
+  /**
+   *  disposes of all internal observation/autoruns so this instance can be garbage-collected.
+   */
+  dispose() {
+    const store = this;
+    store.autorunDisposer && store.autorunDisposer();
+    store.observeDataObjectDisposer && store.observeDataObjectDisposer();
+    store.observeDataPropertiesDisposer && store.observeDataPropertiesDisposer();
+    store.observeComputedPropertiesDisposers.forEach((f) => f());
+    store.autorunDisposer = undefined;
+    store.observeDataObjectDisposer = undefined;
+    store.observeDataPropertiesDisposer = undefined;
+    store.observeComputedPropertiesDisposers = [];
+  }
+
+  /**
+   * Configures and enables or disables auto-save
+   * @param {Number} autoSaveInterval - (in ms) - if non-zero autosave will be enabled, otherwise disabled
+   * @param {Object} [autoSaveOptions] - overrides the default autoSaveOptions if provided
+   */
+  configAutoSave(autoSaveInterval, autoSaveOptions) {
+    const store = this;
+    store.autorunDisposer && store.autorunDisposer();
+    store.options.autoSaveInterval = autoSaveInterval;
+    store.options.autoSaveOptions = autoSaveOptions || store.options.autoSaveOptions;
+
+    // auto-save by observing dataChanges keys
+    if (store.options.autoSaveInterval) {
+      // Supports both Mobx <=3 (autorunAsync) and Mobx 4+
+      // (ObservableMap keys no longer returning an Array is used to detect Mobx 4+,
+      // because in non-production build autorunAsync exists in 4.x to issue deprecation error)
+      const asyncAutorun = Array.isArray(store.dataChanges.keys()) ? autorunAsync : (fn, delay) => autorun(fn, { delay });
+
+      store.autorunDisposer = asyncAutorun(() => {
+        if ((!store.options.idProperty || store.data[store.options.idProperty]) && Array.from(store.dataChanges).length) {
+          store.options.log(`[${store.options.name}] Auto-save started...`);
+          store.save(store.options.autoSaveOptions);
+        }
+      }, store.options.autoSaveInterval);
+    } else {
+      store.autorunDisposer = undefined;
     }
   }
 
@@ -254,7 +322,8 @@ class FormStore {
     if (store.status.hasChanges) {
       // This will trigger autorun in case it already ran while we were editing:
       action(() => {
-        const key = store.dataChanges.keys()[0];
+        // In MobX 4+, ObservableMap.keys() returns an Iterable, not an array
+        const key = Array.from(store.dataChanges)[0][0];
         const value = store.dataChanges.get(key);
         store.dataChanges.delete(key);
         store.dataChanges.set(key, value);
@@ -365,11 +434,17 @@ class FormStore {
       return false;
     }
     store.options.log(`[${store.options.name}] Starting data refresh...`);
+
+    if (store.isLoading) {
+      store.options.log(`[${store.options.name}] Data is already being refreshed.`);
+      return false;
+    }
+
     const now = new Date();
     const past = new Date(Date.now() - store.options.minRefreshInterval);
 
     // check if lastSync is between now and 15 minutes ago
-    if (past < store.lastSync && store.lastSync < now) {
+    if (past < store.lastSync && store.lastSync <= now) {
       store.options.log(`[${store.options.name}] Data refreshed within last ${store.options.minRefreshInterval / 1000} seconds.`);
       return false;
     }
@@ -408,6 +483,8 @@ class FormStore {
         await store.options.afterRefresh(store);
       }
 
+      observeComputedProperties(store);
+
       store.options.log(`[${store.options.name}] Refresh finished.`);
       if (!store.isReady) store.isReady = true;
     } catch (err) {
@@ -444,9 +521,11 @@ class FormStore {
 
         let updates;
         if (saveAll) {
-          updates = Object.assign({}, store.data);
+          updates = {};
+          Object.getOwnPropertyNames(store.data).forEach((key) => { if (key[0] !== '$') updates[key] = store.data[key]; });
         } else {
-          updates = store.dataChanges.toJS();
+          // Mobx 4+ toJS() exports a Map, not an Object and toJSON is the 'legacy' method to export an Object
+          updates = store.dataChanges.toJSON ? store.dataChanges.toJSON() : store.dataChanges.toJS();
 
           if (Object.keys(updates).length === 0) {
             store.options.log(`[${store.options.name}] No changes to save.`);
@@ -459,11 +538,13 @@ class FormStore {
             if (skipPropertyBeingEdited && property === store.propertyBeingEdited) {
               store.options.log(`[${store.options.name}] Property "${property}" is being edited.`);
               delete updates[property];
+              return;
             }
 
             if (store.dataErrors[property]) {
               store.options.log(`[${store.options.name}] Property "${property}" is not validated.`);
               delete updates[property];
+              return;
             }
 
             if (store.isSame(updates[property], store.dataServer[property])) {
